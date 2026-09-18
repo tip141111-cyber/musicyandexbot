@@ -4,6 +4,7 @@ import shutil
 import sys
 from collections import deque
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import discord
 import imageio_ffmpeg
@@ -56,6 +57,7 @@ OWNER_USER_IDS = parse_ids(os.getenv("OWNER_USER_IDS"))
 ALLOWED_ROLE_IDS = parse_ids(os.getenv("ALLOWED_ROLE_IDS"))
 SEARCH_LIMIT = 10
 ARTIST_QUEUE_LIMIT = 20
+PLAYLIST_QUEUE_LIMIT = int(os.getenv("PLAYLIST_QUEUE_LIMIT", "50"))
 
 
 HELP_TEXT = """Команды бота:
@@ -63,6 +65,7 @@ HELP_TEXT = """Команды бота:
 `!играть запрос` - найти и включить первый трек
 `!поиск_трек запрос` - поиск треков, 10 результатов
 `!поиск_исполнитель запрос` - поиск исполнителей, 10 результатов
+`!плейлист ссылка` - добавить треки из плейлиста Яндекс Музыки
 `1` ... `10` - включить трек из последнего поиска
 `!выбрать номер` - включить трек из последнего поиска
 `!пауза` - пауза
@@ -287,6 +290,50 @@ def find_artist_tracks(artist_id: str | int, requested_by: str, limit: int = ART
     tracks: list[TrackRequest] = []
     errors: list[str] = []
     for track in artist_tracks.tracks[:limit]:
+        try:
+            tracks.append(build_track_request(track, requested_by))
+        except Exception as exc:
+            errors.append(str(exc))
+
+    if not tracks:
+        detail = errors[0] if errors else "Не удалось получить аудиоссылки."
+        raise RuntimeError(detail)
+
+    return tracks
+
+
+def parse_playlist_reference(playlist_reference: str) -> tuple[str | None, str]:
+    parsed = urlparse(playlist_reference.strip())
+    if not parsed.scheme:
+        return None, playlist_reference.strip()
+
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 4 and parts[0] == "users" and parts[2] == "playlists":
+        return parts[1], parts[3]
+
+    if len(parts) >= 2 and parts[0] == "playlists":
+        return None, parts[1]
+
+    raise RuntimeError("Не понял ссылку на плейлист. Нужна ссылка вида https://music.yandex.ru/users/user/playlists/1000")
+
+
+def find_playlist_tracks(playlist_reference: str, requested_by: str, limit: int = PLAYLIST_QUEUE_LIMIT) -> list[TrackRequest]:
+    if ym_client is None:
+        raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
+
+    user_id, kind = parse_playlist_reference(playlist_reference)
+    playlist = ym_client.users_playlists(kind=kind, user_id=user_id)
+    if playlist is None:
+        raise RuntimeError("Плейлист не найден или нет доступа.")
+
+    playlist_tracks = playlist.tracks or []
+    if not playlist_tracks:
+        raise RuntimeError("В плейлисте не нашлось треков.")
+
+    tracks: list[TrackRequest] = []
+    errors: list[str] = []
+    for playlist_track in playlist_tracks[:limit]:
+        track = getattr(playlist_track, "track", playlist_track)
         try:
             tracks.append(build_track_request(track, requested_by))
         except Exception as exc:
@@ -581,6 +628,30 @@ async def enqueue_artist(ctx: commands.Context, item: SearchItem) -> None:
     )
 
 
+async def enqueue_playlist(ctx: commands.Context, playlist_reference: str) -> None:
+    voice = await ensure_voice(ctx)
+    await ctx.typing()
+
+    try:
+        tracks = await asyncio.to_thread(find_playlist_tracks, playlist_reference, str(ctx.author))
+    except Exception as exc:
+        await ctx.reply(f"Не получилось открыть плейлист: {exc}")
+        return
+
+    player = get_player(ctx.guild.id)
+    player.text_channel_id = ctx.channel.id
+    was_idle = not voice.is_playing() and not voice.is_paused()
+    player.queue.extend(tracks)
+
+    if was_idle:
+        await play_next(ctx.guild)
+
+    await ctx.reply(
+        f"Добавил треки из плейлиста: {len(tracks)} шт.",
+        view=PlayerControls(),
+    )
+
+
 async def enqueue_track_interaction(interaction: discord.Interaction, query: str) -> None:
     if interaction.guild is None:
         await interaction.followup.send("Команда работает только на сервере.", ephemeral=True)
@@ -640,6 +711,37 @@ async def enqueue_artist_interaction(interaction: discord.Interaction, item: Sea
 
     await interaction.followup.send(
         f"Добавил треки исполнителя {item.label}: {len(tracks)} шт.",
+        view=PlayerControls(),
+    )
+
+
+async def enqueue_playlist_interaction(interaction: discord.Interaction, playlist_reference: str) -> None:
+    if interaction.guild is None:
+        await interaction.followup.send("Команда работает только на сервере.", ephemeral=True)
+        return
+
+    try:
+        voice = await ensure_interaction_voice(interaction)
+    except Exception as exc:
+        await interaction.followup.send(str(exc), ephemeral=True)
+        return
+
+    try:
+        tracks = await asyncio.to_thread(find_playlist_tracks, playlist_reference, str(interaction.user))
+    except Exception as exc:
+        await interaction.followup.send(f"Не получилось открыть плейлист: {exc}", ephemeral=True)
+        return
+
+    player = get_player(interaction.guild.id)
+    player.text_channel_id = interaction.channel_id
+    was_idle = not voice.is_playing() and not voice.is_paused()
+    player.queue.extend(tracks)
+
+    if was_idle:
+        await play_next(interaction.guild)
+
+    await interaction.followup.send(
+        f"Добавил треки из плейлиста: {len(tracks)} шт.",
         view=PlayerControls(),
     )
 
@@ -772,6 +874,12 @@ async def artist_search_command(ctx: commands.Context, *, query: str) -> None:
     )
 
 
+@bot.command(name="playlist", aliases=["плейлист", "добавь_плейлист"])
+@restricted()
+async def playlist_command(ctx: commands.Context, *, url: str) -> None:
+    await enqueue_playlist(ctx, url)
+
+
 @bot.command(name="select", aliases=["выбрать", "номер"])
 @restricted()
 async def select_command(ctx: commands.Context, number: int) -> None:
@@ -896,6 +1004,16 @@ async def slash_play(interaction: discord.Interaction, query: str) -> None:
 
     await interaction.response.defer()
     await enqueue_track_interaction(interaction, query)
+
+
+@bot.tree.command(name="playlist", description="Добавить треки из плейлиста Яндекс Музыки")
+@app_commands.describe(url="Ссылка на плейлист Яндекс Музыки")
+async def slash_playlist(interaction: discord.Interaction, url: str) -> None:
+    if not await ensure_interaction_allowed(interaction):
+        return
+
+    await interaction.response.defer()
+    await enqueue_playlist_interaction(interaction, url)
 
 
 @bot.tree.command(name="search_track", description="Найти 10 треков в Яндекс Музыке")
@@ -1101,6 +1219,7 @@ async def slash_commands(interaction: discord.Interaction) -> None:
     slash_help = """Slash-команды:
 `/join` - подключиться к голосовому каналу
 `/play query` - найти и включить трек
+`/playlist url` - добавить треки из плейлиста Яндекс Музыки
 `/search_track query` - найти 10 треков
 `/search_artist query` - найти 10 исполнителей
 `/select number` - включить трек из последнего поиска
