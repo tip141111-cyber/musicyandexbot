@@ -102,6 +102,7 @@ class GuildPlayer:
         self.queue: deque[TrackRequest] = deque()
         self.current: TrackRequest | None = None
         self.text_channel_id: int | None = None
+        self.idle_disconnect_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
 
 
@@ -118,6 +119,7 @@ ym_client = Client(YANDEX_MUSIC_TOKEN).init() if YANDEX_MUSIC_TOKEN else None
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE") or shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 FFMPEG_AUDIO_FILTER = os.getenv("FFMPEG_AUDIO_FILTER", "aresample=48000").strip()
 FFMPEG_VOLUME = os.getenv("FFMPEG_VOLUME", "1.0").strip()
+IDLE_DISCONNECT_SECONDS = int(os.getenv("IDLE_DISCONNECT_SECONDS", "900"))
 
 
 def build_ffmpeg_options() -> str:
@@ -139,6 +141,47 @@ def get_player(guild_id: int) -> GuildPlayer:
     if guild_id not in players:
         players[guild_id] = GuildPlayer()
     return players[guild_id]
+
+
+def cancel_idle_disconnect(player: GuildPlayer) -> None:
+    if player.idle_disconnect_task and not player.idle_disconnect_task.done():
+        player.idle_disconnect_task.cancel()
+    player.idle_disconnect_task = None
+
+
+def schedule_idle_disconnect(guild: discord.Guild) -> None:
+    if IDLE_DISCONNECT_SECONDS <= 0:
+        return
+
+    player = get_player(guild.id)
+    if player.idle_disconnect_task and not player.idle_disconnect_task.done():
+        return
+
+    async def disconnect_when_idle() -> None:
+        try:
+            await asyncio.sleep(IDLE_DISCONNECT_SECONDS)
+            async with player.lock:
+                voice = guild.voice_client
+                is_busy = (
+                    player.current is not None
+                    or bool(player.queue)
+                    or (voice is not None and (voice.is_playing() or voice.is_paused()))
+                )
+                if voice is None or not voice.is_connected() or is_busy:
+                    return
+
+                await voice.disconnect()
+                channel = guild.get_channel(player.text_channel_id) if player.text_channel_id else None
+                if channel:
+                    minutes = IDLE_DISCONNECT_SECONDS // 60
+                    await channel.send(f"Вышел из голосового канала после {minutes} минут бездействия.")
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if player.idle_disconnect_task is asyncio.current_task():
+                player.idle_disconnect_task = None
+
+    player.idle_disconnect_task = asyncio.create_task(disconnect_when_idle())
 
 
 def is_allowed(ctx: commands.Context) -> bool:
@@ -307,9 +350,12 @@ async def ensure_voice(ctx: commands.Context) -> discord.VoiceClient:
     if ctx.voice_client:
         if ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
+        schedule_idle_disconnect(ctx.guild)
         return ctx.voice_client
 
-    return await channel.connect()
+    voice = await channel.connect()
+    schedule_idle_disconnect(ctx.guild)
+    return voice
 
 
 async def ensure_interaction_voice(interaction: discord.Interaction) -> discord.VoiceClient:
@@ -325,9 +371,12 @@ async def ensure_interaction_voice(interaction: discord.Interaction) -> discord.
     if voice:
         if voice.channel != channel:
             await voice.move_to(channel)
+        schedule_idle_disconnect(interaction.guild)
         return voice
 
-    return await channel.connect()
+    voice = await channel.connect()
+    schedule_idle_disconnect(interaction.guild)
+    return voice
 
 
 async def play_next(guild: discord.Guild) -> None:
@@ -337,14 +386,17 @@ async def play_next(guild: discord.Guild) -> None:
         voice = guild.voice_client
         if voice is None or not voice.is_connected():
             player.current = None
+            cancel_idle_disconnect(player)
             return
 
         if not player.queue:
             player.current = None
+            schedule_idle_disconnect(guild)
             return
 
         track = player.queue.popleft()
         player.current = track
+        cancel_idle_disconnect(player)
 
         try:
             source = discord.FFmpegPCMAudio(
@@ -475,6 +527,7 @@ class PlayerControls(discord.ui.View):
         voice = interaction.guild.voice_client
         if voice:
             voice.stop()
+            schedule_idle_disconnect(interaction.guild)
 
         await interaction.response.send_message("Остановил и очистил очередь.", ephemeral=True)
 
@@ -634,11 +687,20 @@ async def on_ready() -> None:
     global slash_commands_synced
     if not slash_commands_synced:
         for guild in bot.guilds:
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            print(f"Synced {len(synced)} slash commands to {guild.name}")
+            await sync_guild_commands(guild)
         slash_commands_synced = True
     print(f"Logged in as {bot.user}")
+
+
+async def sync_guild_commands(guild: discord.Guild) -> None:
+    bot.tree.copy_global_to(guild=guild)
+    synced = await bot.tree.sync(guild=guild)
+    print(f"Synced {len(synced)} slash commands to {guild.name}")
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild) -> None:
+    await sync_guild_commands(guild)
 
 
 @bot.event
@@ -755,6 +817,7 @@ async def stop_command(ctx: commands.Context) -> None:
 
     if ctx.voice_client:
         ctx.voice_client.stop()
+        schedule_idle_disconnect(ctx.guild)
 
     await ctx.reply("Остановил и очистил очередь.")
 
@@ -765,6 +828,7 @@ async def leave_command(ctx: commands.Context) -> None:
     player = get_player(ctx.guild.id)
     player.queue.clear()
     player.current = None
+    cancel_idle_disconnect(player)
 
     if ctx.voice_client:
         await ctx.voice_client.disconnect()
@@ -952,6 +1016,7 @@ async def slash_stop(interaction: discord.Interaction) -> None:
 
     if interaction.guild.voice_client:
         interaction.guild.voice_client.stop()
+        schedule_idle_disconnect(interaction.guild)
 
     await interaction.response.send_message("Остановил и очистил очередь.", ephemeral=True)
 
@@ -1019,6 +1084,7 @@ async def slash_leave(interaction: discord.Interaction) -> None:
     player = get_player(interaction.guild.id)
     player.queue.clear()
     player.current = None
+    cancel_idle_disconnect(player)
 
     if interaction.guild.voice_client:
         await interaction.guild.voice_client.disconnect()
