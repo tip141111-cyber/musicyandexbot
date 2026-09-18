@@ -13,8 +13,27 @@ from yandex_music import Client
 
 load_dotenv()
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-YANDEX_MUSIC_TOKEN = os.getenv("YANDEX_MUSIC_TOKEN")
+
+def get_secret(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+
+    value = value.strip().strip('"').strip("'")
+    if value.startswith(f"{name}="):
+        value = value.split("=", 1)[1].strip().strip('"').strip("'")
+
+    if any(ord(char) > 127 for char in value):
+        raise RuntimeError(
+            f"{name} содержит русские буквы или лишний текст. "
+            "В .env должен быть только сам токен после знака ="
+        )
+
+    return value or None
+
+
+DISCORD_TOKEN = get_secret("DISCORD_TOKEN")
+YANDEX_MUSIC_TOKEN = get_secret("YANDEX_MUSIC_TOKEN")
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
 
 
