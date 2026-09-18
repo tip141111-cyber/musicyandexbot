@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 from collections import deque
 from dataclasses import dataclass
 
@@ -99,6 +100,7 @@ class GuildPlayer:
     def __init__(self) -> None:
         self.queue: deque[TrackRequest] = deque()
         self.current: TrackRequest | None = None
+        self.text_channel_id: int | None = None
         self.lock = asyncio.Lock()
 
 
@@ -326,16 +328,28 @@ async def play_next(guild: discord.Guild) -> None:
         track = player.queue.popleft()
         player.current = track
 
-        source = discord.FFmpegPCMAudio(
-            track.stream_url,
-            executable=FFMPEG_EXECUTABLE,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-            options="-vn",
-        )
+        try:
+            source = await discord.FFmpegOpusAudio.from_probe(
+                track.stream_url,
+                executable=FFMPEG_EXECUTABLE,
+                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                options="-vn -loglevel warning",
+                stderr=sys.stderr,
+                method="fallback",
+            )
+        except Exception as exc:
+            print(f"Failed to prepare audio source for {track.label}: {exc}")
+            player.current = None
+            channel = guild.get_channel(player.text_channel_id) if player.text_channel_id else None
+            if channel:
+                await channel.send(f"Не получилось подготовить звук для трека: {track.label}")
+            if player.queue:
+                asyncio.create_task(play_next(guild))
+            return
 
         def after_play(error: Exception | None) -> None:
             if error:
-                print(f"Playback error: {error}")
+                print(f"Playback error for {track.label}: {error}")
             future = asyncio.run_coroutine_threadsafe(play_next(guild), bot.loop)
             try:
                 future.result()
@@ -459,6 +473,7 @@ async def enqueue_track(ctx: commands.Context, query: str) -> None:
         return
 
     player = get_player(ctx.guild.id)
+    player.text_channel_id = ctx.channel.id
     player.queue.append(track)
 
     if not voice.is_playing() and not voice.is_paused():
@@ -483,6 +498,7 @@ async def enqueue_artist(ctx: commands.Context, item: SearchItem) -> None:
         return
 
     player = get_player(ctx.guild.id)
+    player.text_channel_id = ctx.channel.id
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
@@ -513,6 +529,7 @@ async def enqueue_track_interaction(interaction: discord.Interaction, query: str
         return
 
     player = get_player(interaction.guild.id)
+    player.text_channel_id = interaction.channel_id
     player.queue.append(track)
 
     if not voice.is_playing() and not voice.is_paused():
@@ -544,6 +561,7 @@ async def enqueue_artist_interaction(interaction: discord.Interaction, item: Sea
         return
 
     player = get_player(interaction.guild.id)
+    player.text_channel_id = interaction.channel_id
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
