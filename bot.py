@@ -314,7 +314,23 @@ def parse_playlist_reference(playlist_reference: str) -> tuple[str | None, str]:
     if len(parts) >= 2 and parts[0] == "playlists":
         return None, parts[1]
 
-    raise RuntimeError("Не понял ссылку на плейлист. Нужна ссылка вида https://music.yandex.ru/users/user/playlists/1000")
+    raise RuntimeError(
+        "Не понял ссылку на плейлист. Нужна ссылка вида "
+        "https://music.yandex.ru/users/user/playlists/1000"
+    )
+
+
+def load_yandex_playlist(user_id: str | None, kind: str):
+    if kind.startswith("lk."):
+        playlist_uuid = kind.removeprefix("lk.")
+        return ym_client.playlist(playlist_uuid)
+
+    try:
+        return ym_client.users_playlists(kind=kind, user_id=user_id)
+    except Exception:
+        if "-" in kind:
+            return ym_client.playlist(kind.removeprefix("lk."))
+        raise
 
 
 def find_playlist_tracks(playlist_reference: str, requested_by: str, limit: int = PLAYLIST_QUEUE_LIMIT) -> list[TrackRequest]:
@@ -322,7 +338,7 @@ def find_playlist_tracks(playlist_reference: str, requested_by: str, limit: int 
         raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
 
     user_id, kind = parse_playlist_reference(playlist_reference)
-    playlist = ym_client.users_playlists(kind=kind, user_id=user_id)
+    playlist = load_yandex_playlist(user_id, kind)
     if playlist is None:
         raise RuntimeError("Плейлист не найден или нет доступа.")
 
