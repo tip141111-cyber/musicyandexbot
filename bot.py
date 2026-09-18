@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import re
 import shutil
 import sys
@@ -78,6 +79,7 @@ HELP_TEXT = """Команды бота:
 `!стоп` - остановить и очистить очередь
 `!очередь` - показать очередь
 `!играть_из_очереди номер` - включить трек из очереди
+`!shuffle on/off` - включить или выключить случайный порядок
 `!сейчас` - что играет сейчас
 `!выйди` - отключиться"""
 
@@ -110,6 +112,7 @@ class GuildPlayer:
         self.current: TrackRequest | None = None
         self.text_channel_id: int | None = None
         self.idle_disconnect_task: asyncio.Task | None = None
+        self.shuffle_enabled = False
         self.lock = asyncio.Lock()
 
 
@@ -189,6 +192,17 @@ def schedule_idle_disconnect(guild: discord.Guild) -> None:
                 player.idle_disconnect_task = None
 
     player.idle_disconnect_task = asyncio.create_task(disconnect_when_idle())
+
+
+def pop_next_track(player: GuildPlayer) -> TrackRequest:
+    if not player.shuffle_enabled or len(player.queue) <= 1:
+        return player.queue.popleft()
+
+    selected_index = random.randrange(len(player.queue))
+    player.queue.rotate(-selected_index)
+    track = player.queue.popleft()
+    player.queue.rotate(selected_index)
+    return track
 
 
 def is_allowed(ctx: commands.Context) -> bool:
@@ -464,7 +478,7 @@ async def play_next(guild: discord.Guild) -> None:
             schedule_idle_disconnect(guild)
             return
 
-        track = player.queue.popleft()
+        track = pop_next_track(player)
         player.current = track
         cancel_idle_disconnect(player)
 
@@ -523,6 +537,9 @@ async def jump_to_queue_track(guild: discord.Guild, number: int) -> TrackRequest
 
 def format_queue(player: GuildPlayer, limit: int = 20) -> str:
     lines: list[str] = []
+    mode = "случайный" if player.shuffle_enabled else "по порядку"
+    lines.append(f"Режим: {mode}")
+
     if player.current:
         lines.append(f"Сейчас играет: {player.current.label}")
 
@@ -987,6 +1004,29 @@ async def queue_play_command(ctx: commands.Context, number: int) -> None:
     await ctx.reply(f"Включаю из очереди: {track.label}", view=PlayerControls())
 
 
+@bot.command(name="shuffle", aliases=["random", "рандом", "случайно"])
+@restricted()
+async def shuffle_command(ctx: commands.Context, mode: str | None = None) -> None:
+    player = get_player(ctx.guild.id)
+    if mode is None:
+        state = "включен" if player.shuffle_enabled else "выключен"
+        await ctx.reply(f"Случайный порядок сейчас {state}.")
+        return
+
+    normalized = mode.lower()
+    if normalized in {"on", "true", "1", "yes", "да", "вкл", "включить"}:
+        player.shuffle_enabled = True
+        await ctx.reply("Случайный порядок включен.")
+        return
+
+    if normalized in {"off", "false", "0", "no", "нет", "выкл", "выключить"}:
+        player.shuffle_enabled = False
+        await ctx.reply("Воспроизведение по порядку включено.")
+        return
+
+    await ctx.reply("Используй `!shuffle on` или `!shuffle off`.")
+
+
 @bot.command(name="np", aliases=["сейчас", "играет"])
 @restricted()
 async def now_playing_command(ctx: commands.Context) -> None:
@@ -1196,6 +1236,24 @@ async def slash_queue_play(interaction: discord.Interaction, number: app_command
     await interaction.followup.send(f"Включаю из очереди: {track.label}", view=PlayerControls())
 
 
+@bot.tree.command(name="shuffle", description="Включить или выключить случайный порядок очереди")
+@app_commands.describe(enabled="true - случайно, false - по порядку")
+async def slash_shuffle(interaction: discord.Interaction, enabled: bool) -> None:
+    if not await ensure_interaction_allowed(interaction):
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message("Команда работает только на сервере.", ephemeral=True)
+        return
+
+    player = get_player(interaction.guild.id)
+    player.shuffle_enabled = enabled
+    if enabled:
+        await interaction.response.send_message("Случайный порядок включен.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Воспроизведение по порядку включено.", ephemeral=True)
+
+
 @bot.tree.command(name="now", description="Показать, что сейчас играет")
 async def slash_now(interaction: discord.Interaction) -> None:
     if not await ensure_interaction_allowed(interaction):
@@ -1252,6 +1310,7 @@ async def slash_commands(interaction: discord.Interaction) -> None:
 `/stop` - остановить и очистить очередь
 `/queue` - показать очередь
 `/queue_play number` - включить трек из очереди
+`/shuffle enabled` - включить или выключить случайный порядок
 `/now` - что играет сейчас
 `/leave` - отключиться"""
     await interaction.response.send_message(slash_help, ephemeral=True)
