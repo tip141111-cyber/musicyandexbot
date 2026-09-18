@@ -55,6 +55,51 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe bot.py
 ```
 
+## Docker Compose
+
+На сервере:
+
+```bash
+git clone https://github.com/tip141111-cyber/musicyandexbot.git
+cd musicyandexbot
+cp .env.example .env
+```
+
+Заполни `.env` реальными значениями:
+
+```env
+DISCORD_TOKEN=...
+YANDEX_MUSIC_TOKEN=...
+ALLOWED_USER_IDS=832292697322684417,708323370910875669,376344746303553536
+OWNER_USER_IDS=832292697322684417
+COMMAND_PREFIX=!
+```
+
+Запуск:
+
+```bash
+docker compose up -d --build
+```
+
+Проверка логов:
+
+```bash
+docker compose logs -f music-yandex-bot
+```
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+Обновление после нового коммита:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
 ## Команды
 
 Основной способ управления - slash-команды. Они появляются во всплывающем меню Discord при наборе `/`.
