@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shutil
 import sys
 from collections import deque
@@ -58,6 +59,9 @@ ALLOWED_ROLE_IDS = parse_ids(os.getenv("ALLOWED_ROLE_IDS"))
 SEARCH_LIMIT = 10
 ARTIST_QUEUE_LIMIT = 20
 PLAYLIST_QUEUE_LIMIT = int(os.getenv("PLAYLIST_QUEUE_LIMIT", "50"))
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 HELP_TEXT = """Команды бота:
@@ -324,6 +328,9 @@ def load_yandex_playlist(user_id: str | None, kind: str):
     if kind.startswith("lk."):
         playlist_uuid = kind.removeprefix("lk.")
         return ym_client.playlist(playlist_uuid)
+
+    if UUID_RE.fullmatch(kind):
+        return ym_client.playlist(kind)
 
     try:
         return ym_client.users_playlists(kind=kind, user_id=user_id)
