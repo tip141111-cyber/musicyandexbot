@@ -116,6 +116,23 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 ym_client = Client(YANDEX_MUSIC_TOKEN).init() if YANDEX_MUSIC_TOKEN else None
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE") or shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG_AUDIO_FILTER = os.getenv("FFMPEG_AUDIO_FILTER", "aresample=48000").strip()
+FFMPEG_VOLUME = os.getenv("FFMPEG_VOLUME", "1.0").strip()
+
+
+def build_ffmpeg_options() -> str:
+    filters = []
+    if FFMPEG_AUDIO_FILTER:
+        filters.append(FFMPEG_AUDIO_FILTER)
+
+    if FFMPEG_VOLUME and FFMPEG_VOLUME != "1.0":
+        filters.append(f"volume={FFMPEG_VOLUME}")
+
+    options = ["-vn", "-loglevel", "warning", "-ar", "48000", "-ac", "2"]
+    if filters:
+        options.extend(["-af", ",".join(filters)])
+
+    return " ".join(options)
 
 
 def get_player(guild_id: int) -> GuildPlayer:
@@ -334,7 +351,7 @@ async def play_next(guild: discord.Guild) -> None:
                 track.stream_url,
                 executable=FFMPEG_EXECUTABLE,
                 before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                options="-vn -loglevel warning",
+                options=build_ffmpeg_options(),
                 stderr=sys.stderr,
             )
         except Exception as exc:
