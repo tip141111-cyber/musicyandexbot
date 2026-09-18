@@ -1,0 +1,4 @@
+discord.py[voice]>=2.4.0
+yandex-music>=2.2.0
+python-dotenv>=1.0.1
+imageio-ffmpeg>=0.5.1
