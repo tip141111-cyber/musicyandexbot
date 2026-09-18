@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -114,7 +115,7 @@ intents.voice_states = True
 
 bot = commands.Bot(command_prefix=COMMAND_PREFIX, intents=intents, help_command=None)
 ym_client = Client(YANDEX_MUSIC_TOKEN).init() if YANDEX_MUSIC_TOKEN else None
-FFMPEG_EXECUTABLE = imageio_ffmpeg.get_ffmpeg_exe()
+FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE") or shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def get_player(guild_id: int) -> GuildPlayer:
@@ -329,13 +330,12 @@ async def play_next(guild: discord.Guild) -> None:
         player.current = track
 
         try:
-            source = await discord.FFmpegOpusAudio.from_probe(
+            source = discord.FFmpegPCMAudio(
                 track.stream_url,
                 executable=FFMPEG_EXECUTABLE,
                 before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
                 options="-vn -loglevel warning",
                 stderr=sys.stderr,
-                method="fallback",
             )
         except Exception as exc:
             print(f"Failed to prepare audio source for {track.label}: {exc}")
