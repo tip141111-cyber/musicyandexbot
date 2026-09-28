@@ -1381,7 +1381,7 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError) 
 if not DISCORD_TOKEN:
     raise RuntimeError("DISCORD_TOKEN не задан в .env")
 
-try
+try:
     bot.run(DISCORD_TOKEN)
 except discord.PrivilegedIntentsRequired as exc:
     raise RuntimeError(
