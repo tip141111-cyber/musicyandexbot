@@ -40,6 +40,13 @@ def get_secret(name: str) -> str | None:
 DISCORD_TOKEN = get_secret("DISCORD_TOKEN")
 YANDEX_MUSIC_TOKEN = get_secret("YANDEX_MUSIC_TOKEN")
 COMMAND_PREFIX = os.getenv("COMMAND_PREFIX", "!")
+ALLOW_ALL_GUILD_MEMBERS = os.getenv("ALLOW_ALL_GUILD_MEMBERS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+    "да",
+}
 
 
 def parse_ids(raw_value: str | None) -> set[int]:
@@ -88,8 +95,9 @@ HELP_TEXT = """Команды бота:
 class TrackRequest:
     title: str
     artist: str
-    stream_url: str
     requested_by: str
+    track_id: str | int | None = None
+    stream_url: str | None = None
 
     @property
     def label(self) -> str:
@@ -210,6 +218,9 @@ def is_allowed(ctx: commands.Context) -> bool:
 
 
 def is_user_allowed(user: discord.abc.User) -> bool:
+    if ALLOW_ALL_GUILD_MEMBERS:
+        return True
+
     if not ALLOWED_USER_IDS and not ALLOWED_ROLE_IDS:
         return True
 
@@ -269,21 +280,52 @@ def owner_restricted():
     return commands.check(predicate)
 
 
-def build_track_request(track, requested_by: str) -> TrackRequest:
+def get_track_stream_url(track) -> str:
     download_info = track.get_download_info()
     if not download_info:
         raise RuntimeError("Не удалось получить ссылку на аудио.")
 
     best = max(download_info, key=lambda item: item.bitrate_in_kbps or 0)
-    stream_url = best.get_direct_link()
+    return best.get_direct_link()
 
+
+def get_track_request_id(track) -> str | int | None:
+    track_id = getattr(track, "id", None)
+    albums = getattr(track, "albums", None) or []
+    if track_id is not None and albums:
+        album_id = getattr(albums[0], "id", None)
+        if album_id is not None:
+            return f"{track_id}:{album_id}"
+
+    return track_id
+
+
+def build_track_request(track, requested_by: str) -> TrackRequest:
     artists = ", ".join(artist.name for artist in track.artists)
     return TrackRequest(
         title=track.title,
         artist=artists,
-        stream_url=stream_url,
         requested_by=requested_by,
+        track_id=get_track_request_id(track),
     )
+
+
+def resolve_track_stream_url(track_request: TrackRequest) -> str:
+    if ym_client is None:
+        raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
+
+    if track_request.track_id is None:
+        if track_request.stream_url:
+            return track_request.stream_url
+        raise RuntimeError("У трека нет ID для обновления ссылки.")
+
+    tracks = ym_client.tracks(track_request.track_id)
+    if not tracks:
+        raise RuntimeError("Не удалось обновить ссылку на трек.")
+
+    stream_url = get_track_stream_url(tracks[0])
+    track_request.stream_url = stream_url
+    return stream_url
 
 
 def find_yandex_track(query: str, requested_by: str) -> TrackRequest:
@@ -483,10 +525,18 @@ async def play_next(guild: discord.Guild) -> None:
         cancel_idle_disconnect(player)
 
         try:
+            stream_url = await asyncio.to_thread(resolve_track_stream_url, track)
             source = discord.FFmpegPCMAudio(
-                track.stream_url,
+                stream_url,
                 executable=FFMPEG_EXECUTABLE,
-                before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+                before_options=(
+                    "-reconnect 1 "
+                    "-reconnect_streamed 1 "
+                    "-reconnect_on_network_error 1 "
+                    "-reconnect_on_http_error 5xx "
+                    "-reconnect_delay_max 5 "
+                    "-rw_timeout 15000000"
+                ),
                 options=build_ffmpeg_options(),
                 stderr=sys.stderr,
             )
