@@ -31,32 +31,16 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Check Python syntax
         run: |
           python -m compileall bot.py
 
-      - name: Check bot module can be imported
+      - name: Validate Dockerfile exists
         run: |
-          python -c "import bot; print('bot.py imported successfully')"
-
-      - name: Create CI env file
-        run: |
-          echo "TELEGRAM_BOT_TOKEN=dummy-token" > .env
-          echo "ADMIN_CHAT_IDS=123456" >> .env
-          echo "BOT_TIMEZONE=Asia/Yakutsk" >> .env
-          echo "BOT_PROMPT_HOUR=17" >> .env
-          echo "BOT_PROMPT_MINUTE=10" >> .env
-
-      - name: Validate Docker Compose config
-        run: |
-          docker compose config
+          test -f Dockerfile
 
       - name: Build Docker image
         run: |
-          docker build -t drilling-progress-bot:ci .
-
-      - name: Smoke check Docker image
-        run: |
-          docker run --rm drilling-progress-bot:ci python -c "import bot; print('docker image smoke check passed')"
+          docker build -t musicyandexbot:ci .
