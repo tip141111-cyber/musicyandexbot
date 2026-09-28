@@ -41,6 +41,18 @@ jobs:
         run: |
           test -f Dockerfile
 
+      - name: Create CI env file
+        run: |
+          echo "DISCORD_TOKEN=dummy-discord-token" > .env
+          echo "YANDEX_MUSIC_TOKEN=dummy-yandex-token" >> .env
+          echo "COMMAND_PREFIX=!" >> .env
+          echo "ALLOWED_USER_IDS=" >> .env
+          echo "OWNER_USER_IDS=" >> .env
+          echo "ALLOWED_ROLE_IDS=" >> .env
+          echo "ALLOW_ALL_GUILD_MEMBERS=true" >> .env
+          echo "IDLE_DISCONNECT_SECONDS=900" >> .env
+          echo "PLAYLIST_QUEUE_LIMIT=50" >> .env
+
       - name: Validate Docker Compose config
         run: |
           docker compose config
