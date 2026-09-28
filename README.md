@@ -55,6 +55,19 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe bot.py
 ```
 
+## Структура проекта
+
+- `bot.py` - точка входа: создает Discord-бота, подключает модули и запускает его.
+- `musicbot/config.py` - `.env`, токены, лимиты, FFmpeg-настройки.
+- `musicbot/commands.py` - prefix- и slash-команды Discord.
+- `musicbot/actions.py` - общие сценарии команд: добавить трек, исполнителя, плейлист, выбрать результат поиска.
+- `musicbot/player.py` - голосовой канал, очередь воспроизведения, FFmpeg, авто-выход при простое.
+- `musicbot/yandex_service.py` - поиск и получение треков/исполнителей/плейлистов из Яндекс Музыки.
+- `musicbot/state.py` - состояние серверов: очереди, последние поиски.
+- `musicbot/ui.py` - кнопки управления под сообщениями.
+- `musicbot/access.py` - проверка доступа пользователей.
+- `musicbot/models.py` - общие структуры данных.
+
 ## Docker Compose
 
 На сервере:

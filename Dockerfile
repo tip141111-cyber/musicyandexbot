@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
 
 COPY bot.py get_yandex_token.py ./
+COPY musicbot ./musicbot
 
 USER botuser
 

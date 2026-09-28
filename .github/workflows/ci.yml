@@ -35,7 +35,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          python -m py_compile bot.py get_yandex_token.py
+          python -m compileall -q bot.py get_yandex_token.py musicbot
 
       - name: Validate Dockerfile exists
         run: |
