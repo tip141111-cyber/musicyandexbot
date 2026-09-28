@@ -7,7 +7,14 @@ from discord.ext import commands
 from .config import FFMPEG_AUDIO_FILTER, FFMPEG_EXECUTABLE, FFMPEG_VOLUME, IDLE_DISCONNECT_SECONDS
 from .models import GuildPlayer, TrackRequest
 from .state import get_player, pop_next_track
-from .yandex_service import resolve_track_stream_url
+from .yandex_service import (
+    get_wave_tracks,
+    resolve_track_stream_url,
+    send_wave_radio_started,
+    send_wave_track_finished,
+    send_wave_track_skipped,
+    send_wave_track_started,
+)
 
 
 _bot: commands.Bot | None = None
@@ -36,6 +43,70 @@ def cancel_idle_disconnect(player: GuildPlayer) -> None:
     if player.idle_disconnect_task and not player.idle_disconnect_task.done():
         player.idle_disconnect_task.cancel()
     player.idle_disconnect_task = None
+
+
+def disable_wave(player: GuildPlayer) -> None:
+    player.wave_enabled = False
+    player.wave_station = None
+    player.wave_batch_id = None
+    player.wave_queue_id = None
+    player.wave_seed_label = None
+    player.wave_requested_by = None
+
+
+def request_skip(player: GuildPlayer) -> None:
+    player.skip_requested = True
+
+
+def drop_pending_wave_tracks(player: GuildPlayer) -> None:
+    player.queue = type(player.queue)(track for track in player.queue if not track.is_wave_track)
+
+
+def activate_wave_from_track(player: GuildPlayer, track: TrackRequest) -> None:
+    if not track.wave_station or track.wave_track_id is None:
+        return
+
+    player.wave_enabled = True
+    player.wave_station = track.wave_station
+    player.wave_queue_id = track.wave_track_id
+    player.wave_seed_label = track.label
+    player.wave_requested_by = track.requested_by
+    try:
+        send_wave_radio_started(player.wave_station, player.wave_batch_id)
+    except Exception as exc:
+        print(f"Wave radioStarted feedback failed for {track.label}: {exc}")
+
+
+def send_finished_feedback(player: GuildPlayer, track: TrackRequest | None) -> None:
+    if track is None or not track.wave_station or track.wave_track_id is None:
+        player.skip_requested = False
+        return
+
+    played_seconds = track.duration_seconds or 0
+    try:
+        if player.skip_requested:
+            send_wave_track_skipped(track.wave_station, track.wave_track_id, played_seconds, track.wave_batch_id)
+        else:
+            send_wave_track_finished(track.wave_station, track.wave_track_id, played_seconds, track.wave_batch_id)
+    except Exception as exc:
+        print(f"Wave feedback failed for {track.label}: {exc}")
+    finally:
+        player.skip_requested = False
+
+
+def load_more_wave_tracks(player: GuildPlayer) -> None:
+    if not player.wave_enabled or not player.wave_station:
+        return
+
+    requested_by = player.wave_requested_by or "Yandex Wave"
+    tracks, batch_id = get_wave_tracks(
+        player.wave_station,
+        requested_by=requested_by,
+        batch_id=player.wave_batch_id,
+        queue_id=player.wave_queue_id,
+    )
+    player.wave_batch_id = batch_id
+    player.queue.extend(tracks)
 
 
 def schedule_idle_disconnect(guild: discord.Guild) -> None:
@@ -116,6 +187,9 @@ async def play_next(guild: discord.Guild) -> None:
     player = get_player(guild.id)
 
     async with player.lock:
+        finished_track = player.current
+        send_finished_feedback(player, finished_track)
+
         voice = guild.voice_client
         if voice is None or not voice.is_connected():
             player.current = None
@@ -123,13 +197,39 @@ async def play_next(guild: discord.Guild) -> None:
             return
 
         if not player.queue:
-            player.current = None
-            schedule_idle_disconnect(guild)
-            return
+            try:
+                await asyncio.to_thread(load_more_wave_tracks, player)
+            except Exception as exc:
+                print(f"Wave load failed: {exc}")
+                player.current = None
+                schedule_idle_disconnect(guild)
+                return
+
+            if not player.queue:
+                player.current = None
+                schedule_idle_disconnect(guild)
+                return
 
         track = pop_next_track(player)
         player.current = track
+        player.skip_requested = False
         cancel_idle_disconnect(player)
+
+        if track.starts_wave:
+            activate_wave_from_track(player, track)
+
+        if track.wave_station and track.wave_track_id is not None:
+            player.wave_queue_id = track.wave_track_id
+            player.wave_batch_id = track.wave_batch_id or player.wave_batch_id
+            try:
+                await asyncio.to_thread(
+                    send_wave_track_started,
+                    track.wave_station,
+                    track.wave_track_id,
+                    track.wave_batch_id,
+                )
+            except Exception as exc:
+                print(f"Wave trackStarted feedback failed for {track.label}: {exc}")
 
         try:
             stream_url = await asyncio.to_thread(resolve_track_stream_url, track)
@@ -196,6 +296,9 @@ def format_queue(player: GuildPlayer, limit: int = 20) -> str:
     lines: list[str] = []
     mode = "случайный" if player.shuffle_enabled else "по порядку"
     lines.append(f"Режим: {mode}")
+    if player.wave_enabled:
+        seed = f" по треку {player.wave_seed_label}" if player.wave_seed_label else ""
+        lines.append(f"Волна включена{seed}.")
 
     if player.current:
         lines.append(f"Сейчас играет: {player.current.label}")

@@ -1,7 +1,7 @@
 import discord
 
 from .access import is_user_allowed
-from .player import schedule_idle_disconnect
+from .player import disable_wave, request_skip, schedule_idle_disconnect
 from .state import get_player
 
 
@@ -41,6 +41,8 @@ class PlayerControls(discord.ui.View):
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         voice = interaction.guild.voice_client if interaction.guild else None
         if voice and (voice.is_playing() or voice.is_paused()):
+            if interaction.guild:
+                request_skip(get_player(interaction.guild.id))
             voice.stop()
             await interaction.response.send_message("Пропускаю.", ephemeral=True)
         else:
@@ -55,6 +57,7 @@ class PlayerControls(discord.ui.View):
         player = get_player(interaction.guild.id)
         player.queue.clear()
         player.current = None
+        disable_wave(player)
 
         voice = interaction.guild.voice_client
         if voice:

@@ -34,14 +34,30 @@ def get_track_request_id(track) -> str | int | None:
     return track_id
 
 
+def get_wave_track_id(track_id: str | int | None) -> str | int | None:
+    if isinstance(track_id, str) and ":" in track_id:
+        return track_id.split(":", 1)[0]
+    return track_id
+
+
 def build_track_request(track, requested_by: str) -> TrackRequest:
     artists = ", ".join(artist.name for artist in track.artists)
+    track_id = get_track_request_id(track)
     return TrackRequest(
         title=track.title,
         artist=artists,
         requested_by=requested_by,
-        track_id=get_track_request_id(track),
+        track_id=track_id,
+        wave_track_id=get_wave_track_id(track_id),
+        duration_seconds=(track.duration_ms / 1000) if getattr(track, "duration_ms", None) else None,
     )
+
+
+def build_wave_station(track_request: TrackRequest) -> str:
+    wave_track_id = get_wave_track_id(track_request.wave_track_id or track_request.track_id)
+    if wave_track_id is None:
+        raise RuntimeError("У трека нет ID для запуска волны.")
+    return f"track:{wave_track_id}"
 
 
 def resolve_track_stream_url(track_request: TrackRequest) -> str:
@@ -71,6 +87,100 @@ def find_yandex_track(query: str, requested_by: str) -> TrackRequest:
         raise RuntimeError("Трек не найден.")
 
     return build_track_request(result.tracks.results[0], requested_by)
+
+
+def find_yandex_track_by_id(track_id: str | int, requested_by: str) -> TrackRequest:
+    if ym_client is None:
+        raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
+
+    tracks = ym_client.tracks(track_id)
+    if not tracks:
+        raise RuntimeError("Трек не найден.")
+
+    return build_track_request(tracks[0], requested_by)
+
+
+def find_wave_seed_track(query: str, requested_by: str) -> TrackRequest:
+    track = find_yandex_track(query, requested_by)
+    track.starts_wave = True
+    track.wave_station = build_wave_station(track)
+    return track
+
+
+def get_wave_tracks(
+    station: str,
+    requested_by: str,
+    batch_id: str | None = None,
+    queue_id: str | int | None = None,
+    limit: int = 10,
+) -> tuple[list[TrackRequest], str | None]:
+    if ym_client is None:
+        raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
+
+    result = ym_client.rotor_station_tracks(station, queue=queue_id)
+    if result is None or not result.sequence:
+        raise RuntimeError("Яндекс Музыка не вернула треки для волны.")
+
+    tracks: list[TrackRequest] = []
+    next_batch_id = result.batch_id or batch_id
+    for sequence_item in result.sequence:
+        track = getattr(sequence_item, "track", None)
+        if track is None:
+            continue
+
+        track_request = build_track_request(track, requested_by)
+        track_request.wave_station = station
+        track_request.wave_batch_id = next_batch_id
+        track_request.is_wave_track = True
+        tracks.append(track_request)
+
+        if len(tracks) >= limit:
+            break
+
+    if not tracks:
+        raise RuntimeError("В волне не нашлось треков.")
+
+    return tracks, next_batch_id
+
+
+def send_wave_radio_started(station: str, batch_id: str | None = None) -> None:
+    if ym_client is not None:
+        ym_client.rotor_station_feedback_radio_started(station, from_="discord", batch_id=batch_id)
+
+
+def send_wave_track_started(station: str, track_id: str | int, batch_id: str | None = None) -> None:
+    if ym_client is not None:
+        ym_client.rotor_station_feedback_track_started(station, track_id, batch_id=batch_id)
+
+
+def send_wave_track_finished(
+    station: str,
+    track_id: str | int,
+    total_played_seconds: float,
+    batch_id: str | None = None,
+) -> None:
+    if ym_client is not None:
+        ym_client.rotor_station_feedback_track_finished(
+            station,
+            track_id,
+            total_played_seconds=total_played_seconds,
+            batch_id=batch_id,
+        )
+
+
+def send_wave_track_skipped(
+    station: str,
+    track_id: str | int,
+    total_played_seconds: float,
+    batch_id: str | None = None,
+) -> None:
+    if ym_client is not None:
+        ym_client.rotor_station_feedback_skip(
+            station,
+            track_id,
+            total_played_seconds=total_played_seconds,
+            batch_id=batch_id,
+        )
 
 
 def find_artist_tracks(artist_id: str | int, requested_by: str, limit: int = ARTIST_QUEUE_LIMIT) -> list[TrackRequest]:
@@ -175,7 +285,14 @@ def search_yandex_track_items(query: str, limit: int = SEARCH_LIMIT) -> list[Sea
         else:
             label = track.title
 
-        items.append(SearchItem(kind="track", label=label, query=label))
+        items.append(
+            SearchItem(
+                kind="track",
+                label=label,
+                query=label,
+                track_id=get_track_request_id(track),
+            )
+        )
 
     return items
 

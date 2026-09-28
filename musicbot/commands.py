@@ -8,7 +8,7 @@ from discord.ext import commands
 from .access import ensure_interaction_allowed, is_allowed, is_user_allowed, restricted
 from .actions import enqueue_playlist, enqueue_playlist_interaction, enqueue_track, enqueue_track_interaction, play_search_selection, play_search_selection_interaction
 from .config import COMMAND_PREFIX, HELP_TEXT
-from .player import cancel_idle_disconnect, ensure_interaction_voice, ensure_voice, format_queue, jump_to_queue_track, schedule_idle_disconnect
+from .player import cancel_idle_disconnect, disable_wave, ensure_interaction_voice, ensure_voice, format_queue, jump_to_queue_track, request_skip, schedule_idle_disconnect
 from .state import get_player, last_searches
 from .ui import PlayerControls
 from .yandex_service import search_yandex_artist_items, search_yandex_track_items
@@ -71,6 +71,12 @@ def register_commands(bot: commands.Bot) -> None:
         await enqueue_track(ctx, query)
 
 
+    @bot.command(name="wave_track", aliases=["волна_трек", "моя_волна"])
+    @restricted()
+    async def wave_track_command(ctx: commands.Context, *, query: str) -> None:
+        await enqueue_track(ctx, query, start_wave=True)
+
+
     @bot.command(name="search", aliases=["поиск", "найди", "поиск_трек", "трек"])
     @restricted()
     async def search_command(ctx: commands.Context, *, query: str) -> None:
@@ -84,7 +90,11 @@ def register_commands(bot: commands.Bot) -> None:
 
         last_searches[(ctx.guild.id, ctx.author.id)] = items
         lines = [f"{index}. {item.label}" for index, item in enumerate(items, start=1)]
-        await ctx.reply("Нашел треки в Яндекс Музыке:\n" + "\n".join(lines) + "\n\nНапиши номер, например `3`, чтобы включить трек.")
+        await ctx.reply(
+            "Нашел треки в Яндекс Музыке:\n"
+            + "\n".join(lines)
+            + "\n\nНапиши номер, например `3`, чтобы включить трек и продолжить волной."
+        )
 
 
     @bot.command(name="artist", aliases=["исполнитель", "поиск_исполнитель", "артист"])
@@ -143,6 +153,7 @@ def register_commands(bot: commands.Bot) -> None:
     @restricted()
     async def skip_command(ctx: commands.Context) -> None:
         if ctx.voice_client and (ctx.voice_client.is_playing() or ctx.voice_client.is_paused()):
+            request_skip(get_player(ctx.guild.id))
             ctx.voice_client.stop()
             await ctx.reply("Пропускаю.")
         else:
@@ -155,6 +166,7 @@ def register_commands(bot: commands.Bot) -> None:
         player = get_player(ctx.guild.id)
         player.queue.clear()
         player.current = None
+        disable_wave(player)
 
         if ctx.voice_client:
             ctx.voice_client.stop()
@@ -169,6 +181,7 @@ def register_commands(bot: commands.Bot) -> None:
         player = get_player(ctx.guild.id)
         player.queue.clear()
         player.current = None
+        disable_wave(player)
         cancel_idle_disconnect(player)
 
         if ctx.voice_client:
@@ -262,6 +275,16 @@ def register_commands(bot: commands.Bot) -> None:
         await enqueue_track_interaction(interaction, query)
 
 
+    @bot.tree.command(name="wave_track", description="Включить трек и продолжить похожей волной")
+    @app_commands.describe(query="Название трека или исполнитель")
+    async def slash_wave_track(interaction: discord.Interaction, query: str) -> None:
+        if not await ensure_interaction_allowed(interaction):
+            return
+
+        await interaction.response.defer()
+        await enqueue_track_interaction(interaction, query, start_wave=True)
+
+
     @bot.tree.command(name="playlist", description="Добавить треки из плейлиста Яндекс Музыки")
     @app_commands.describe(url="Ссылка на плейлист Яндекс Музыки")
     async def slash_playlist(interaction: discord.Interaction, url: str) -> None:
@@ -295,7 +318,7 @@ def register_commands(bot: commands.Bot) -> None:
         await interaction.followup.send(
             "Нашел треки в Яндекс Музыке:\n"
             + "\n".join(lines)
-            + "\n\nИспользуй `/select number`, чтобы включить трек."
+            + "\n\nИспользуй `/select number`, чтобы включить трек и продолжить волной."
         )
 
 
@@ -369,6 +392,8 @@ def register_commands(bot: commands.Bot) -> None:
 
         voice = interaction.guild.voice_client if interaction.guild else None
         if voice and (voice.is_playing() or voice.is_paused()):
+            if interaction.guild:
+                request_skip(get_player(interaction.guild.id))
             voice.stop()
             await interaction.response.send_message("Пропускаю.", ephemeral=True)
         else:
@@ -387,6 +412,7 @@ def register_commands(bot: commands.Bot) -> None:
         player = get_player(interaction.guild.id)
         player.queue.clear()
         player.current = None
+        disable_wave(player)
 
         if interaction.guild.voice_client:
             interaction.guild.voice_client.stop()
@@ -476,6 +502,7 @@ def register_commands(bot: commands.Bot) -> None:
         player = get_player(interaction.guild.id)
         player.queue.clear()
         player.current = None
+        disable_wave(player)
         cancel_idle_disconnect(player)
 
         if interaction.guild.voice_client:
@@ -493,6 +520,7 @@ def register_commands(bot: commands.Bot) -> None:
         slash_help = dedent("""Slash-команды:
     `/join` - подключиться к голосовому каналу
     `/play query` - найти и включить трек
+    `/wave_track query` - включить трек и продолжить похожей волной
     `/playlist url` - добавить треки из плейлиста Яндекс Музыки
     `/search_track query` - найти 10 треков
     `/search_artist query` - найти 10 исполнителей

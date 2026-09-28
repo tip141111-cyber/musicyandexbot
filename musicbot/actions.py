@@ -4,31 +4,67 @@ import discord
 from discord.ext import commands
 
 from .models import SearchItem
-from .player import ensure_interaction_voice, ensure_voice, play_next
+from .player import drop_pending_wave_tracks, ensure_interaction_voice, ensure_voice, play_next
 from .state import get_player, last_searches
 from .ui import PlayerControls
-from .yandex_service import find_artist_tracks, find_playlist_tracks, find_yandex_track
+from .yandex_service import build_wave_station, find_artist_tracks, find_playlist_tracks, find_wave_seed_track, find_yandex_track, find_yandex_track_by_id
 
 
-async def enqueue_track(ctx: commands.Context, query: str) -> None:
+async def enqueue_track(ctx: commands.Context, query: str, start_wave: bool = False) -> None:
     voice = await ensure_voice(ctx)
     await ctx.typing()
 
     try:
-        track = await asyncio.to_thread(find_yandex_track, query, str(ctx.author))
+        finder = find_wave_seed_track if start_wave else find_yandex_track
+        track = await asyncio.to_thread(finder, query, str(ctx.author))
     except Exception as exc:
         await ctx.reply(f"Не получилось найти или открыть трек: {exc}")
         return
 
     player = get_player(ctx.guild.id)
     player.text_channel_id = ctx.channel.id
+    drop_pending_wave_tracks(player)
     player.queue.append(track)
 
     if not voice.is_playing() and not voice.is_paused():
         await play_next(ctx.guild)
-        await ctx.reply(f"Играет: {track.label}", view=PlayerControls())
+        message = f"Играет: {track.label}"
     else:
-        await ctx.reply(f"Добавил в очередь: {track.label}", view=PlayerControls())
+        message = f"Добавил в очередь: {track.label}"
+
+    if start_wave:
+        message += "\nВолна включится после этого трека и ручной очереди."
+
+    await ctx.reply(message, view=PlayerControls())
+
+
+async def enqueue_search_track(ctx: commands.Context, item: SearchItem) -> None:
+    voice = await ensure_voice(ctx)
+    await ctx.typing()
+
+    try:
+        if item.track_id is not None:
+            track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(ctx.author))
+            track.starts_wave = True
+            track.wave_station = build_wave_station(track)
+        else:
+            track = await asyncio.to_thread(find_wave_seed_track, item.query, str(ctx.author))
+    except Exception as exc:
+        await ctx.reply(f"Не получилось открыть выбранный трек: {exc}")
+        return
+
+    player = get_player(ctx.guild.id)
+    player.text_channel_id = ctx.channel.id
+    drop_pending_wave_tracks(player)
+    player.queue.append(track)
+
+    if not voice.is_playing() and not voice.is_paused():
+        await play_next(ctx.guild)
+        message = f"Играет: {track.label}"
+    else:
+        message = f"Добавил в очередь: {track.label}"
+
+    await ctx.reply(message + "\nВолна включится после этого трека и ручной очереди.", view=PlayerControls())
 
 
 async def enqueue_artist(ctx: commands.Context, item: SearchItem) -> None:
@@ -47,6 +83,7 @@ async def enqueue_artist(ctx: commands.Context, item: SearchItem) -> None:
 
     player = get_player(ctx.guild.id)
     player.text_channel_id = ctx.channel.id
+    drop_pending_wave_tracks(player)
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
@@ -71,6 +108,7 @@ async def enqueue_playlist(ctx: commands.Context, playlist_reference: str) -> No
 
     player = get_player(ctx.guild.id)
     player.text_channel_id = ctx.channel.id
+    drop_pending_wave_tracks(player)
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
@@ -83,7 +121,7 @@ async def enqueue_playlist(ctx: commands.Context, playlist_reference: str) -> No
     )
 
 
-async def enqueue_track_interaction(interaction: discord.Interaction, query: str) -> None:
+async def enqueue_track_interaction(interaction: discord.Interaction, query: str, start_wave: bool = False) -> None:
     if interaction.guild is None:
         await interaction.followup.send("Команда работает только на сервере.", ephemeral=True)
         return
@@ -95,20 +133,66 @@ async def enqueue_track_interaction(interaction: discord.Interaction, query: str
         return
 
     try:
-        track = await asyncio.to_thread(find_yandex_track, query, str(interaction.user))
+        finder = find_wave_seed_track if start_wave else find_yandex_track
+        track = await asyncio.to_thread(finder, query, str(interaction.user))
     except Exception as exc:
         await interaction.followup.send(f"Не получилось найти или открыть трек: {exc}", ephemeral=True)
         return
 
     player = get_player(interaction.guild.id)
     player.text_channel_id = interaction.channel_id
+    drop_pending_wave_tracks(player)
     player.queue.append(track)
 
     if not voice.is_playing() and not voice.is_paused():
         await play_next(interaction.guild)
-        await interaction.followup.send(f"Играет: {track.label}", view=PlayerControls())
+        message = f"Играет: {track.label}"
     else:
-        await interaction.followup.send(f"Добавил в очередь: {track.label}", view=PlayerControls())
+        message = f"Добавил в очередь: {track.label}"
+
+    if start_wave:
+        message += "\nВолна включится после этого трека и ручной очереди."
+
+    await interaction.followup.send(message, view=PlayerControls())
+
+
+async def enqueue_search_track_interaction(interaction: discord.Interaction, item: SearchItem) -> None:
+    if interaction.guild is None:
+        await interaction.followup.send("Команда работает только на сервере.", ephemeral=True)
+        return
+
+    try:
+        voice = await ensure_interaction_voice(interaction)
+    except Exception as exc:
+        await interaction.followup.send(str(exc), ephemeral=True)
+        return
+
+    try:
+        if item.track_id is not None:
+            track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(interaction.user))
+            track.starts_wave = True
+            track.wave_station = build_wave_station(track)
+        else:
+            track = await asyncio.to_thread(find_wave_seed_track, item.query, str(interaction.user))
+    except Exception as exc:
+        await interaction.followup.send(f"Не получилось открыть выбранный трек: {exc}", ephemeral=True)
+        return
+
+    player = get_player(interaction.guild.id)
+    player.text_channel_id = interaction.channel_id
+    drop_pending_wave_tracks(player)
+    player.queue.append(track)
+
+    if not voice.is_playing() and not voice.is_paused():
+        await play_next(interaction.guild)
+        message = f"Играет: {track.label}"
+    else:
+        message = f"Добавил в очередь: {track.label}"
+
+    await interaction.followup.send(
+        message + "\nВолна включится после этого трека и ручной очереди.",
+        view=PlayerControls(),
+    )
 
 
 async def enqueue_artist_interaction(interaction: discord.Interaction, item: SearchItem) -> None:
@@ -134,6 +218,7 @@ async def enqueue_artist_interaction(interaction: discord.Interaction, item: Sea
 
     player = get_player(interaction.guild.id)
     player.text_channel_id = interaction.channel_id
+    drop_pending_wave_tracks(player)
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
@@ -165,6 +250,7 @@ async def enqueue_playlist_interaction(interaction: discord.Interaction, playlis
 
     player = get_player(interaction.guild.id)
     player.text_channel_id = interaction.channel_id
+    drop_pending_wave_tracks(player)
     was_idle = not voice.is_playing() and not voice.is_paused()
     player.queue.extend(tracks)
 
@@ -191,7 +277,7 @@ async def play_search_selection(ctx: commands.Context, selection: int) -> None:
     if item.kind == "artist":
         await enqueue_artist(ctx, item)
     else:
-        await enqueue_track(ctx, item.query)
+        await enqueue_search_track(ctx, item)
 
 
 async def play_search_selection_interaction(interaction: discord.Interaction, selection: int) -> None:
@@ -212,4 +298,4 @@ async def play_search_selection_interaction(interaction: discord.Interaction, se
     if item.kind == "artist":
         await enqueue_artist_interaction(interaction, item)
     else:
-        await enqueue_track_interaction(interaction, item.query)
+        await enqueue_search_track_interaction(interaction, item)
