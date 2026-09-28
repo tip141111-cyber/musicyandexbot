@@ -3,7 +3,16 @@ from urllib.parse import urlparse
 
 from yandex_music import Client
 
-from .config import ARTIST_QUEUE_LIMIT, PLAYLIST_QUEUE_LIMIT, SEARCH_LIMIT, YANDEX_MUSIC_TOKEN
+from .config import (
+    ARTIST_QUEUE_LIMIT,
+    PLAYLIST_QUEUE_LIMIT,
+    SEARCH_LIMIT,
+    WAVE_DIVERSITY,
+    WAVE_LANGUAGE,
+    WAVE_MOOD_ENERGY,
+    WAVE_TYPE,
+    YANDEX_MUSIC_TOKEN,
+)
 from .models import SearchItem, TrackRequest
 
 
@@ -116,6 +125,17 @@ def get_wave_tracks(
 ) -> tuple[list[TrackRequest], str | None]:
     if ym_client is None:
         raise RuntimeError("YANDEX_MUSIC_TOKEN не задан в .env")
+
+    try:
+        ym_client.rotor_station_settings2(
+            station,
+            mood_energy=WAVE_MOOD_ENERGY,
+            diversity=WAVE_DIVERSITY,
+            language=WAVE_LANGUAGE,
+            type_=WAVE_TYPE,
+        )
+    except Exception as exc:
+        print(f"Wave settings failed for {station}: {exc}")
 
     result = ym_client.rotor_station_tracks(station, queue=queue_id)
     if result is None or not result.sequence:

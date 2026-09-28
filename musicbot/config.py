@@ -61,6 +61,10 @@ FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE") or shutil.which("ffmpeg") or 
 FFMPEG_AUDIO_FILTER = os.getenv("FFMPEG_AUDIO_FILTER", "aresample=48000").strip()
 FFMPEG_VOLUME = os.getenv("FFMPEG_VOLUME", "1.0").strip()
 IDLE_DISCONNECT_SECONDS = int(os.getenv("IDLE_DISCONNECT_SECONDS", "900"))
+WAVE_MOOD_ENERGY = os.getenv("WAVE_MOOD_ENERGY", "all").strip()
+WAVE_DIVERSITY = os.getenv("WAVE_DIVERSITY", "discover").strip()
+WAVE_LANGUAGE = os.getenv("WAVE_LANGUAGE", "any").strip()
+WAVE_TYPE = os.getenv("WAVE_TYPE", "rotor").strip()
 
 
 HELP_TEXT = """Команды бота:
