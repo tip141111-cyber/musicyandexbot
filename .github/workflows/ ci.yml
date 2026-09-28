@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure runtime secrets are not committed
+        run: |
+          test ! -f .env
+          test ! -d .venv
+          test ! -d __pycache__
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall bot.py
+
+      - name: Check bot module can be imported
+        run: |
+          python -c "import bot; print('bot.py imported successfully')"
+
+      - name: Create CI env file
+        run: |
+          echo "TELEGRAM_BOT_TOKEN=dummy-token" > .env
+          echo "ADMIN_CHAT_IDS=123456" >> .env
+          echo "BOT_TIMEZONE=Asia/Yakutsk" >> .env
+          echo "BOT_PROMPT_HOUR=17" >> .env
+          echo "BOT_PROMPT_MINUTE=10" >> .env
+
+      - name: Validate Docker Compose config
+        run: |
+          docker compose config
+
+      - name: Build Docker image
+        run: |
+          docker build -t drilling-progress-bot:ci .
+
+      - name: Smoke check Docker image
+        run: |
+          docker run --rm drilling-progress-bot:ci python -c "import bot; print('docker image smoke check passed')"
