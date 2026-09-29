@@ -8,7 +8,7 @@ from discord.ext import commands
 from .access import ensure_interaction_allowed, is_allowed, is_user_allowed, restricted
 from .actions import enqueue_playlist, enqueue_playlist_interaction, enqueue_track, enqueue_track_interaction, play_search_selection, play_search_selection_interaction
 from .config import COMMAND_PREFIX, HELP_TEXT
-from .player import cancel_idle_disconnect, disable_wave, ensure_interaction_voice, ensure_voice, format_queue, jump_to_queue_track, request_skip, schedule_idle_disconnect
+from .player import cancel_alone_disconnect, cancel_idle_disconnect, disable_wave, ensure_interaction_voice, ensure_voice, format_queue, jump_to_queue_track, request_skip, schedule_alone_disconnect, schedule_idle_disconnect
 from .state import get_player, last_searches
 from .ui import PlayerControls
 from .yandex_service import search_yandex_artist_items, search_yandex_track_items
@@ -36,6 +36,25 @@ def register_commands(bot: commands.Bot) -> None:
     @bot.event
     async def on_guild_join(guild: discord.Guild) -> None:
         await sync_guild_commands(guild)
+
+
+    @bot.event
+    async def on_voice_state_update(
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ) -> None:
+        if member.guild.voice_client is None:
+            return
+
+        player = get_player(member.guild.id)
+        if member.guild.voice_client.channel in {before.channel, after.channel}:
+            if member.guild.voice_client.channel and any(
+                not voice_member.bot for voice_member in member.guild.voice_client.channel.members
+            ):
+                cancel_alone_disconnect(player)
+            else:
+                schedule_alone_disconnect(member.guild)
 
 
     @bot.event
@@ -167,6 +186,7 @@ def register_commands(bot: commands.Bot) -> None:
         player.queue.clear()
         player.current = None
         disable_wave(player)
+        cancel_alone_disconnect(player)
 
         if ctx.voice_client:
             ctx.voice_client.stop()
@@ -182,6 +202,7 @@ def register_commands(bot: commands.Bot) -> None:
         player.queue.clear()
         player.current = None
         disable_wave(player)
+        cancel_alone_disconnect(player)
         cancel_idle_disconnect(player)
 
         if ctx.voice_client:
@@ -413,6 +434,7 @@ def register_commands(bot: commands.Bot) -> None:
         player.queue.clear()
         player.current = None
         disable_wave(player)
+        cancel_alone_disconnect(player)
 
         if interaction.guild.voice_client:
             interaction.guild.voice_client.stop()
@@ -503,6 +525,7 @@ def register_commands(bot: commands.Bot) -> None:
         player.queue.clear()
         player.current = None
         disable_wave(player)
+        cancel_alone_disconnect(player)
         cancel_idle_disconnect(player)
 
         if interaction.guild.voice_client:

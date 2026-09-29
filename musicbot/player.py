@@ -7,14 +7,7 @@ from discord.ext import commands
 from .config import FFMPEG_AUDIO_FILTER, FFMPEG_EXECUTABLE, FFMPEG_VOLUME, IDLE_DISCONNECT_SECONDS
 from .models import GuildPlayer, TrackRequest
 from .state import get_player, pop_next_track
-from .yandex_service import (
-    get_wave_tracks,
-    resolve_track_stream_url,
-    send_wave_radio_started,
-    send_wave_track_finished,
-    send_wave_track_skipped,
-    send_wave_track_started,
-)
+from .yandex_service import get_wave_tracks, resolve_track_stream_url
 
 
 _bot: commands.Bot | None = None
@@ -45,11 +38,16 @@ def cancel_idle_disconnect(player: GuildPlayer) -> None:
     player.idle_disconnect_task = None
 
 
+def cancel_alone_disconnect(player: GuildPlayer) -> None:
+    if player.alone_disconnect_task and not player.alone_disconnect_task.done():
+        player.alone_disconnect_task.cancel()
+    player.alone_disconnect_task = None
+
+
 def disable_wave(player: GuildPlayer) -> None:
     player.wave_enabled = False
-    player.wave_station = None
-    player.wave_batch_id = None
     player.wave_queue_id = None
+    player.wave_recent_track_ids.clear()
     player.wave_seed_label = None
     player.wave_requested_by = None
 
@@ -63,50 +61,92 @@ def drop_pending_wave_tracks(player: GuildPlayer) -> None:
 
 
 def activate_wave_from_track(player: GuildPlayer, track: TrackRequest) -> None:
-    if not track.wave_station or track.wave_track_id is None:
+    if track.wave_track_id is None:
         return
 
     player.wave_enabled = True
-    player.wave_station = track.wave_station
     player.wave_queue_id = track.wave_track_id
     player.wave_seed_label = track.label
     player.wave_requested_by = track.requested_by
-    try:
-        send_wave_radio_started(player.wave_station, player.wave_batch_id)
-    except Exception as exc:
-        print(f"Wave radioStarted feedback failed for {track.label}: {exc}")
+    player.wave_recent_track_ids.add(str(track.wave_track_id))
 
 
 def send_finished_feedback(player: GuildPlayer, track: TrackRequest | None) -> None:
-    if track is None or not track.wave_station or track.wave_track_id is None:
+    if track is None or track.wave_track_id is None:
         player.skip_requested = False
         return
 
-    played_seconds = track.duration_seconds or 0
-    try:
-        if player.skip_requested:
-            send_wave_track_skipped(track.wave_station, track.wave_track_id, played_seconds, track.wave_batch_id)
-        else:
-            send_wave_track_finished(track.wave_station, track.wave_track_id, played_seconds, track.wave_batch_id)
-    except Exception as exc:
-        print(f"Wave feedback failed for {track.label}: {exc}")
-    finally:
-        player.skip_requested = False
+    if player.wave_enabled:
+        player.wave_queue_id = track.wave_track_id
+        player.wave_recent_track_ids.add(str(track.wave_track_id))
+        if len(player.wave_recent_track_ids) > 200:
+            player.wave_recent_track_ids = set(list(player.wave_recent_track_ids)[-100:])
+
+    player.skip_requested = False
 
 
 def load_more_wave_tracks(player: GuildPlayer) -> None:
-    if not player.wave_enabled or not player.wave_station:
+    if not player.wave_enabled or player.wave_queue_id is None:
         return
 
     requested_by = player.wave_requested_by or "Yandex Wave"
-    tracks, batch_id = get_wave_tracks(
-        player.wave_station,
+    tracks = get_wave_tracks(
+        player.wave_queue_id,
         requested_by=requested_by,
-        batch_id=player.wave_batch_id,
-        queue_id=player.wave_queue_id,
+        exclude_track_ids=player.wave_recent_track_ids,
     )
-    player.wave_batch_id = batch_id
+    for track in tracks:
+        if track.wave_track_id is not None:
+            player.wave_recent_track_ids.add(str(track.wave_track_id))
     player.queue.extend(tracks)
+
+
+def is_bot_alone_in_voice(guild: discord.Guild) -> bool:
+    voice = guild.voice_client
+    if voice is None or not voice.channel:
+        return False
+
+    human_members = [member for member in voice.channel.members if not member.bot]
+    return len(human_members) == 0
+
+
+def schedule_alone_disconnect(guild: discord.Guild) -> None:
+    if IDLE_DISCONNECT_SECONDS <= 0:
+        return
+
+    player = get_player(guild.id)
+    if not is_bot_alone_in_voice(guild):
+        cancel_alone_disconnect(player)
+        return
+
+    if player.alone_disconnect_task and not player.alone_disconnect_task.done():
+        return
+
+    async def disconnect_if_still_alone() -> None:
+        try:
+            await asyncio.sleep(IDLE_DISCONNECT_SECONDS)
+            async with player.lock:
+                voice = guild.voice_client
+                if voice is None or not voice.is_connected() or not is_bot_alone_in_voice(guild):
+                    return
+
+                player.queue.clear()
+                player.current = None
+                disable_wave(player)
+                cancel_idle_disconnect(player)
+                await voice.disconnect()
+
+                channel = guild.get_channel(player.text_channel_id) if player.text_channel_id else None
+                if channel:
+                    minutes = IDLE_DISCONNECT_SECONDS // 60
+                    await channel.send(f"Вышел из голосового канала: {minutes} минут в комнате никого не было.")
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if player.alone_disconnect_task is asyncio.current_task():
+                player.alone_disconnect_task = None
+
+    player.alone_disconnect_task = asyncio.create_task(disconnect_if_still_alone())
 
 
 def schedule_idle_disconnect(guild: discord.Guild) -> None:
@@ -152,10 +192,12 @@ async def ensure_voice(ctx: commands.Context) -> discord.VoiceClient:
         if ctx.voice_client.channel != channel:
             await ctx.voice_client.move_to(channel)
         schedule_idle_disconnect(ctx.guild)
+        schedule_alone_disconnect(ctx.guild)
         return ctx.voice_client
 
     voice = await channel.connect()
     schedule_idle_disconnect(ctx.guild)
+    schedule_alone_disconnect(ctx.guild)
     return voice
 
 
@@ -173,10 +215,12 @@ async def ensure_interaction_voice(interaction: discord.Interaction) -> discord.
         if voice.channel != channel:
             await voice.move_to(channel)
         schedule_idle_disconnect(interaction.guild)
+        schedule_alone_disconnect(interaction.guild)
         return voice
 
     voice = await channel.connect()
     schedule_idle_disconnect(interaction.guild)
+    schedule_alone_disconnect(interaction.guild)
     return voice
 
 
@@ -194,6 +238,7 @@ async def play_next(guild: discord.Guild) -> None:
         if voice is None or not voice.is_connected():
             player.current = None
             cancel_idle_disconnect(player)
+            cancel_alone_disconnect(player)
             return
 
         if not player.queue:
@@ -214,22 +259,13 @@ async def play_next(guild: discord.Guild) -> None:
         player.current = track
         player.skip_requested = False
         cancel_idle_disconnect(player)
+        schedule_alone_disconnect(guild)
 
         if track.starts_wave:
             activate_wave_from_track(player, track)
 
-        if track.wave_station and track.wave_track_id is not None:
+        if track.wave_track_id is not None:
             player.wave_queue_id = track.wave_track_id
-            player.wave_batch_id = track.wave_batch_id or player.wave_batch_id
-            try:
-                await asyncio.to_thread(
-                    send_wave_track_started,
-                    track.wave_station,
-                    track.wave_track_id,
-                    track.wave_batch_id,
-                )
-            except Exception as exc:
-                print(f"Wave trackStarted feedback failed for {track.label}: {exc}")
 
         try:
             stream_url = await asyncio.to_thread(resolve_track_stream_url, track)

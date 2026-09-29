@@ -1,7 +1,7 @@
 import discord
 
 from .access import is_user_allowed
-from .player import disable_wave, request_skip, schedule_idle_disconnect
+from .player import cancel_alone_disconnect, disable_wave, request_skip, schedule_idle_disconnect
 from .state import get_player
 
 
@@ -58,6 +58,7 @@ class PlayerControls(discord.ui.View):
         player.queue.clear()
         player.current = None
         disable_wave(player)
+        cancel_alone_disconnect(player)
 
         voice = interaction.guild.voice_client
         if voice:

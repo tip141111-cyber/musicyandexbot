@@ -11,8 +11,6 @@ class TrackRequest:
     track_id: str | int | None = None
     stream_url: str | None = None
     starts_wave: bool = False
-    wave_station: str | None = None
-    wave_batch_id: str | None = None
     wave_track_id: str | int | None = None
     duration_seconds: float | None = None
     is_wave_track: bool = False
@@ -39,11 +37,11 @@ class GuildPlayer:
         self.current: TrackRequest | None = None
         self.text_channel_id: int | None = None
         self.idle_disconnect_task: asyncio.Task | None = None
+        self.alone_disconnect_task: asyncio.Task | None = None
         self.shuffle_enabled = False
         self.wave_enabled = False
-        self.wave_station: str | None = None
-        self.wave_batch_id: str | None = None
         self.wave_queue_id: str | int | None = None
+        self.wave_recent_track_ids: set[str] = set()
         self.wave_seed_label: str | None = None
         self.wave_requested_by: str | None = None
         self.skip_requested = False

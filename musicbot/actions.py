@@ -7,7 +7,7 @@ from .models import SearchItem
 from .player import drop_pending_wave_tracks, ensure_interaction_voice, ensure_voice, play_next
 from .state import get_player, last_searches
 from .ui import PlayerControls
-from .yandex_service import build_wave_station, find_artist_tracks, find_playlist_tracks, find_wave_seed_track, find_yandex_track, find_yandex_track_by_id
+from .yandex_service import find_artist_tracks, find_playlist_tracks, find_wave_seed_track, find_yandex_track, find_yandex_track_by_id
 
 
 async def enqueue_track(ctx: commands.Context, query: str, start_wave: bool = False) -> None:
@@ -46,7 +46,6 @@ async def enqueue_search_track(ctx: commands.Context, item: SearchItem) -> None:
         if item.track_id is not None:
             track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(ctx.author))
             track.starts_wave = True
-            track.wave_station = build_wave_station(track)
         else:
             track = await asyncio.to_thread(find_wave_seed_track, item.query, str(ctx.author))
     except Exception as exc:
@@ -171,7 +170,6 @@ async def enqueue_search_track_interaction(interaction: discord.Interaction, ite
         if item.track_id is not None:
             track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(interaction.user))
             track.starts_wave = True
-            track.wave_station = build_wave_station(track)
         else:
             track = await asyncio.to_thread(find_wave_seed_track, item.query, str(interaction.user))
     except Exception as exc:
