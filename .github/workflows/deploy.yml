@@ -1,0 +1,83 @@
+name: CD
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Prepare SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on server
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${{ secrets.VPS_PORT }}" "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" '
+            set -e
+
+            PROJECT_DIR="/opt/musicbot"
+
+            cd "$PROJECT_DIR"
+
+            echo "Deploy directory:"
+            pwd
+
+            echo "Current branch:"
+            git branch --show-current
+
+            echo "Checking local changes:"
+            git status --short
+
+            if [ -n "$(git status --short)" ]; then
+              echo "ERROR: working tree is not clean. Deploy stopped."
+              exit 1
+            fi
+
+            if [ ! -f ".env" ]; then
+              echo "ERROR: .env file not found on server. Deploy stopped."
+              exit 1
+            fi
+
+            OLD_COMMIT=$(git rev-parse --short HEAD)
+            OLD_IMAGE=$(docker inspect -f "{{.Image}}" music-yandex-bot 2>/dev/null || true)
+
+            if [ -n "$OLD_IMAGE" ]; then
+              docker tag "$OLD_IMAGE" "music-yandex-bot-backup:$OLD_COMMIT"
+              echo "Backup image created: music-yandex-bot-backup:$OLD_COMMIT"
+            else
+              echo "No running container image found, backup skipped"
+            fi
+
+            echo "Pulling new code:"
+            git fetch origin main
+            git pull --ff-only origin main
+
+            echo "New commit:"
+            git rev-parse --short HEAD
+
+            echo "Rebuilding and restarting container:"
+            docker compose up -d --build
+
+            echo "Container status:"
+            docker compose ps
+
+            echo "Recent logs:"
+            docker compose logs --tail=80
+          '
