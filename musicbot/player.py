@@ -1,16 +1,20 @@
 import asyncio
+import concurrent.futures
+import logging
 import sys
 
 import discord
 from discord.ext import commands
 
 from .config import FFMPEG_AUDIO_FILTER, FFMPEG_EXECUTABLE, FFMPEG_VOLUME, IDLE_DISCONNECT_SECONDS
+from .diagnostics import run_blocking
 from .models import GuildPlayer, TrackRequest
 from .state import get_player, pop_next_track
 from .yandex_service import get_wave_tracks, resolve_track_stream_url
 
 
 _bot: commands.Bot | None = None
+logger = logging.getLogger("musicbot.player")
 
 
 def configure_player(bot: commands.Bot) -> None:
@@ -85,20 +89,16 @@ def send_finished_feedback(player: GuildPlayer, track: TrackRequest | None) -> N
     player.skip_requested = False
 
 
-def load_more_wave_tracks(player: GuildPlayer) -> None:
+def fetch_more_wave_tracks(player: GuildPlayer) -> list[TrackRequest]:
     if not player.wave_enabled or player.wave_queue_id is None:
-        return
+        return []
 
     requested_by = player.wave_requested_by or "Yandex Wave"
-    tracks = get_wave_tracks(
+    return get_wave_tracks(
         player.wave_queue_id,
         requested_by=requested_by,
         exclude_track_ids=player.wave_recent_track_ids,
     )
-    for track in tracks:
-        if track.wave_track_id is not None:
-            player.wave_recent_track_ids.add(str(track.wave_track_id))
-    player.queue.extend(tracks)
 
 
 def is_bot_alone_in_voice(guild: discord.Guild) -> bool:
@@ -243,9 +243,13 @@ async def play_next(guild: discord.Guild) -> None:
 
         if not player.queue:
             try:
-                await asyncio.to_thread(load_more_wave_tracks, player)
+                tracks = await run_blocking("load wave tracks", fetch_more_wave_tracks, player)
+                for track in tracks:
+                    if track.wave_track_id is not None:
+                        player.wave_recent_track_ids.add(str(track.wave_track_id))
+                player.queue.extend(tracks)
             except Exception as exc:
-                print(f"Wave load failed: {exc}")
+                logger.exception("Wave load failed")
                 player.current = None
                 schedule_idle_disconnect(guild)
                 return
@@ -268,7 +272,7 @@ async def play_next(guild: discord.Guild) -> None:
             player.wave_queue_id = track.wave_track_id
 
         try:
-            stream_url = await asyncio.to_thread(resolve_track_stream_url, track)
+            stream_url = await run_blocking("resolve stream url", resolve_track_stream_url, track)
             source = discord.FFmpegPCMAudio(
                 stream_url,
                 executable=FFMPEG_EXECUTABLE,
@@ -284,7 +288,7 @@ async def play_next(guild: discord.Guild) -> None:
                 stderr=sys.stderr,
             )
         except Exception as exc:
-            print(f"Failed to prepare audio source for {track.label}: {exc}")
+            logger.exception("Failed to prepare audio source for %s", track.label)
             player.current = None
             channel = guild.get_channel(player.text_channel_id) if player.text_channel_id else None
             if channel:
@@ -295,12 +299,14 @@ async def play_next(guild: discord.Guild) -> None:
 
         def after_play(error: Exception | None) -> None:
             if error:
-                print(f"Playback error for {track.label}: {error}")
+                logger.error("Playback error for %s: %s", track.label, error)
             future = asyncio.run_coroutine_threadsafe(play_next(guild), _bot.loop)
             try:
-                future.result()
+                future.result(timeout=60)
+            except concurrent.futures.TimeoutError:
+                logger.error("Queue advance timed out after playback for %s", track.label)
             except Exception as exc:
-                print(f"Queue error: {exc}")
+                logger.exception("Queue error")
 
         voice.play(source, after=after_play)
 

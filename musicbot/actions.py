@@ -1,8 +1,7 @@
-import asyncio
-
 import discord
 from discord.ext import commands
 
+from .diagnostics import run_blocking
 from .models import SearchItem
 from .player import drop_pending_wave_tracks, ensure_interaction_voice, ensure_voice, play_next
 from .state import get_player, last_searches
@@ -16,7 +15,7 @@ async def enqueue_track(ctx: commands.Context, query: str, start_wave: bool = Fa
 
     try:
         finder = find_wave_seed_track if start_wave else find_yandex_track
-        track = await asyncio.to_thread(finder, query, str(ctx.author))
+        track = await run_blocking("find track", finder, query, str(ctx.author))
     except Exception as exc:
         await ctx.reply(f"Не получилось найти или открыть трек: {exc}")
         return
@@ -44,10 +43,10 @@ async def enqueue_search_track(ctx: commands.Context, item: SearchItem) -> None:
 
     try:
         if item.track_id is not None:
-            track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(ctx.author))
+            track = await run_blocking("find selected track", find_yandex_track_by_id, item.track_id, str(ctx.author))
             track.starts_wave = True
         else:
-            track = await asyncio.to_thread(find_wave_seed_track, item.query, str(ctx.author))
+            track = await run_blocking("find selected wave seed", find_wave_seed_track, item.query, str(ctx.author))
     except Exception as exc:
         await ctx.reply(f"Не получилось открыть выбранный трек: {exc}")
         return
@@ -75,7 +74,7 @@ async def enqueue_artist(ctx: commands.Context, item: SearchItem) -> None:
     await ctx.typing()
 
     try:
-        tracks = await asyncio.to_thread(find_artist_tracks, item.artist_id, str(ctx.author))
+        tracks = await run_blocking("find artist tracks", find_artist_tracks, item.artist_id, str(ctx.author))
     except Exception as exc:
         await ctx.reply(f"Не получилось открыть треки исполнителя: {exc}")
         return
@@ -100,7 +99,7 @@ async def enqueue_playlist(ctx: commands.Context, playlist_reference: str) -> No
     await ctx.typing()
 
     try:
-        tracks = await asyncio.to_thread(find_playlist_tracks, playlist_reference, str(ctx.author))
+        tracks = await run_blocking("find playlist tracks", find_playlist_tracks, playlist_reference, str(ctx.author))
     except Exception as exc:
         await ctx.reply(f"Не получилось открыть плейлист: {exc}")
         return
@@ -133,7 +132,7 @@ async def enqueue_track_interaction(interaction: discord.Interaction, query: str
 
     try:
         finder = find_wave_seed_track if start_wave else find_yandex_track
-        track = await asyncio.to_thread(finder, query, str(interaction.user))
+        track = await run_blocking("find track", finder, query, str(interaction.user))
     except Exception as exc:
         await interaction.followup.send(f"Не получилось найти или открыть трек: {exc}", ephemeral=True)
         return
@@ -168,10 +167,10 @@ async def enqueue_search_track_interaction(interaction: discord.Interaction, ite
 
     try:
         if item.track_id is not None:
-            track = await asyncio.to_thread(find_yandex_track_by_id, item.track_id, str(interaction.user))
+            track = await run_blocking("find selected track", find_yandex_track_by_id, item.track_id, str(interaction.user))
             track.starts_wave = True
         else:
-            track = await asyncio.to_thread(find_wave_seed_track, item.query, str(interaction.user))
+            track = await run_blocking("find selected wave seed", find_wave_seed_track, item.query, str(interaction.user))
     except Exception as exc:
         await interaction.followup.send(f"Не получилось открыть выбранный трек: {exc}", ephemeral=True)
         return
@@ -209,7 +208,7 @@ async def enqueue_artist_interaction(interaction: discord.Interaction, item: Sea
         return
 
     try:
-        tracks = await asyncio.to_thread(find_artist_tracks, item.artist_id, str(interaction.user))
+        tracks = await run_blocking("find artist tracks", find_artist_tracks, item.artist_id, str(interaction.user))
     except Exception as exc:
         await interaction.followup.send(f"Не получилось открыть треки исполнителя: {exc}", ephemeral=True)
         return
@@ -241,7 +240,7 @@ async def enqueue_playlist_interaction(interaction: discord.Interaction, playlis
         return
 
     try:
-        tracks = await asyncio.to_thread(find_playlist_tracks, playlist_reference, str(interaction.user))
+        tracks = await run_blocking("find playlist tracks", find_playlist_tracks, playlist_reference, str(interaction.user))
     except Exception as exc:
         await interaction.followup.send(f"Не получилось открыть плейлист: {exc}", ephemeral=True)
         return

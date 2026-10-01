@@ -56,6 +56,8 @@ ALLOWED_ROLE_IDS = parse_ids(os.getenv("ALLOWED_ROLE_IDS"))
 SEARCH_LIMIT = 10
 ARTIST_QUEUE_LIMIT = 20
 PLAYLIST_QUEUE_LIMIT = int(os.getenv("PLAYLIST_QUEUE_LIMIT", "50"))
+YANDEX_REQUEST_TIMEOUT_SECONDS = int(os.getenv("YANDEX_REQUEST_TIMEOUT_SECONDS", "45"))
+BOT_HEALTH_LOG_SECONDS = int(os.getenv("BOT_HEALTH_LOG_SECONDS", "300"))
 
 FFMPEG_EXECUTABLE = os.getenv("FFMPEG_EXECUTABLE") or shutil.which("ffmpeg") or imageio_ffmpeg.get_ffmpeg_exe()
 FFMPEG_AUDIO_FILTER = os.getenv("FFMPEG_AUDIO_FILTER", "aresample=48000").strip()

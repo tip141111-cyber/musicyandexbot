@@ -1,4 +1,3 @@
-import asyncio
 from textwrap import dedent
 
 import discord
@@ -8,6 +7,7 @@ from discord.ext import commands
 from .access import ensure_interaction_allowed, is_allowed, is_user_allowed, restricted
 from .actions import enqueue_playlist, enqueue_playlist_interaction, enqueue_track, enqueue_track_interaction, play_search_selection, play_search_selection_interaction
 from .config import COMMAND_PREFIX, HELP_TEXT
+from .diagnostics import run_blocking, start_health_logger
 from .player import cancel_alone_disconnect, cancel_idle_disconnect, disable_wave, ensure_interaction_voice, ensure_voice, format_queue, jump_to_queue_track, request_skip, schedule_alone_disconnect, schedule_idle_disconnect
 from .state import get_player, last_searches
 from .ui import PlayerControls
@@ -24,6 +24,7 @@ def register_commands(bot: commands.Bot) -> None:
             for guild in bot.guilds:
                 await sync_guild_commands(guild)
             slash_commands_synced = True
+        start_health_logger(bot)
         print(f"Logged in as {bot.user}")
 
 
@@ -102,7 +103,7 @@ def register_commands(bot: commands.Bot) -> None:
         await ctx.typing()
 
         try:
-            items = await asyncio.to_thread(search_yandex_track_items, query)
+            items = await run_blocking("search tracks", search_yandex_track_items, query)
         except Exception as exc:
             await ctx.reply(f"Не получилось найти треки: {exc}")
             return
@@ -122,7 +123,7 @@ def register_commands(bot: commands.Bot) -> None:
         await ctx.typing()
 
         try:
-            items = await asyncio.to_thread(search_yandex_artist_items, query)
+            items = await run_blocking("search artists", search_yandex_artist_items, query)
         except Exception as exc:
             await ctx.reply(f"Не получилось найти исполнителей: {exc}")
             return
@@ -325,7 +326,7 @@ def register_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
 
         try:
-            items = await asyncio.to_thread(search_yandex_track_items, query)
+            items = await run_blocking("search tracks", search_yandex_track_items, query)
         except Exception as exc:
             await interaction.followup.send(f"Не получилось найти треки: {exc}", ephemeral=True)
             return
@@ -352,7 +353,7 @@ def register_commands(bot: commands.Bot) -> None:
         await interaction.response.defer()
 
         try:
-            items = await asyncio.to_thread(search_yandex_artist_items, query)
+            items = await run_blocking("search artists", search_yandex_artist_items, query)
         except Exception as exc:
             await interaction.followup.send(f"Не получилось найти исполнителей: {exc}", ephemeral=True)
             return

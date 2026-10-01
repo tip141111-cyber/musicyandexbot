@@ -1,3 +1,5 @@
+import logging
+
 import discord
 from discord.ext import commands
 
@@ -5,6 +7,11 @@ from musicbot.commands import register_commands
 from musicbot.config import COMMAND_PREFIX, DISCORD_TOKEN
 from musicbot.player import configure_player
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 intents = discord.Intents.default()
 intents.message_content = True
