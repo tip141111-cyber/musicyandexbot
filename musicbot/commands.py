@@ -16,6 +16,7 @@ from .yandex_service import search_yandex_artist_items, search_yandex_track_item
 
 def register_commands(bot: commands.Bot) -> None:
     slash_commands_synced = False
+    bot.add_view(PlayerControls())
 
     @bot.event
     async def on_ready() -> None:
