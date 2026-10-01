@@ -14,7 +14,8 @@ jobs:
   deploy:
     name: Deploy to VPS
     runs-on: ubuntu-latest
-
+environment:
+      name: production
     if: >
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
