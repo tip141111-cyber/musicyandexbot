@@ -38,6 +38,7 @@ class GuildPlayer:
         self.text_channel_id: int | None = None
         self.idle_disconnect_task: asyncio.Task | None = None
         self.alone_disconnect_task: asyncio.Task | None = None
+        self.playback_watchdog_task: asyncio.Task | None = None
         self.shuffle_enabled = False
         self.wave_enabled = False
         self.wave_queue_id: str | int | None = None

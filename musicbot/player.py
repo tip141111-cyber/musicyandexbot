@@ -6,7 +6,13 @@ import sys
 import discord
 from discord.ext import commands
 
-from .config import FFMPEG_AUDIO_FILTER, FFMPEG_EXECUTABLE, FFMPEG_VOLUME, IDLE_DISCONNECT_SECONDS
+from .config import (
+    FFMPEG_AUDIO_FILTER,
+    FFMPEG_EXECUTABLE,
+    FFMPEG_VOLUME,
+    IDLE_DISCONNECT_SECONDS,
+    PLAYBACK_STALL_GRACE_SECONDS,
+)
 from .diagnostics import run_blocking
 from .models import GuildPlayer, TrackRequest
 from .state import get_player, pop_next_track
@@ -48,12 +54,51 @@ def cancel_alone_disconnect(player: GuildPlayer) -> None:
     player.alone_disconnect_task = None
 
 
+def cancel_playback_watchdog(player: GuildPlayer) -> None:
+    if player.playback_watchdog_task and not player.playback_watchdog_task.done():
+        player.playback_watchdog_task.cancel()
+    player.playback_watchdog_task = None
+
+
 def disable_wave(player: GuildPlayer) -> None:
     player.wave_enabled = False
     player.wave_queue_id = None
     player.wave_recent_track_ids.clear()
     player.wave_seed_label = None
     player.wave_requested_by = None
+
+
+def schedule_playback_watchdog(guild: discord.Guild, track: TrackRequest) -> None:
+    if track.duration_seconds is None or PLAYBACK_STALL_GRACE_SECONDS <= 0:
+        return
+
+    player = get_player(guild.id)
+    cancel_playback_watchdog(player)
+    timeout = track.duration_seconds + PLAYBACK_STALL_GRACE_SECONDS
+
+    async def stop_if_stalled() -> None:
+        try:
+            await asyncio.sleep(timeout)
+            voice = guild.voice_client
+            if (
+                voice is not None
+                and voice.is_connected()
+                and voice.is_playing()
+                and player.current is track
+            ):
+                logger.warning(
+                    "Playback watchdog stopped stalled track after %.1f seconds: %s",
+                    timeout,
+                    track.label,
+                )
+                voice.stop()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if player.playback_watchdog_task is asyncio.current_task():
+                player.playback_watchdog_task = None
+
+    player.playback_watchdog_task = asyncio.create_task(stop_if_stalled())
 
 
 def request_skip(player: GuildPlayer) -> None:
@@ -231,6 +276,7 @@ async def play_next(guild: discord.Guild) -> None:
     player = get_player(guild.id)
 
     async with player.lock:
+        cancel_playback_watchdog(player)
         finished_track = player.current
         send_finished_feedback(player, finished_track)
 
@@ -239,6 +285,7 @@ async def play_next(guild: discord.Guild) -> None:
             player.current = None
             cancel_idle_disconnect(player)
             cancel_alone_disconnect(player)
+            cancel_playback_watchdog(player)
             return
 
         if not player.queue:
@@ -251,11 +298,13 @@ async def play_next(guild: discord.Guild) -> None:
             except Exception as exc:
                 logger.exception("Wave load failed")
                 player.current = None
+                cancel_playback_watchdog(player)
                 schedule_idle_disconnect(guild)
                 return
 
             if not player.queue:
                 player.current = None
+                cancel_playback_watchdog(player)
                 schedule_idle_disconnect(guild)
                 return
 
@@ -290,6 +339,7 @@ async def play_next(guild: discord.Guild) -> None:
         except Exception as exc:
             logger.exception("Failed to prepare audio source for %s", track.label)
             player.current = None
+            cancel_playback_watchdog(player)
             channel = guild.get_channel(player.text_channel_id) if player.text_channel_id else None
             if channel:
                 await channel.send(f"Не получилось подготовить звук для трека: {track.label}")
@@ -309,6 +359,7 @@ async def play_next(guild: discord.Guild) -> None:
                 logger.exception("Queue error")
 
         voice.play(source, after=after_play)
+        schedule_playback_watchdog(guild, track)
 
 
 async def jump_to_queue_track(guild: discord.Guild, number: int) -> TrackRequest:
